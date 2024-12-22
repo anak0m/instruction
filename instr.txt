@@ -1,0 +1,131 @@
+1. Выполните базовую настройку всех устройств
+hostnamectl sethostname Имя
+ip a add 192.168.0.0/24 dev enp
+ip r add default via шлюз
+либо используем nmtui
+2. Настройка ISP 
+Команда nmtui
+apt install -y nftables
+#Создаем и открываем файл	
+nano /etc/nftables/hq-r.nft
+table inet nat {
+        chain POSTROUTING {
+        type nat hook postrouting priority srcnat;
+        oifname "инт в инет" masquerade
+        	}
+}
+#nano /etc/sysconfig/nftables.conf
+#	include "/etc/nftables/hq-r.nft" # Ниже строки начинающейся на include
+sudo nano /etc/sysctl.conf 
+	net.ipv4.ip_forward = 1 
+sudo sysctl -p 
+3. Между офисами XX и XX сконфигурируйте IP туннель (GRE) 
+# Создание GRE-туннеля
+ip tunnel add gre1 mode gre local <локальный адр> remote <удаленный> ttl 255
+
+# Назначение IP-адреса интерфейсу GRE
+ip addr add <адр/маска> dev gre1
+
+# Включение интерфейса
+ip link set gre1 up
+
+4. Настройте внутреннюю динамическую маршрутизацию между офисами средствами FRR.
+apt install frr y
+nano /etc/frr/daemons
+	ospfd = yes # (не дописывать, изменить)
+systemctl enable –now frr
+vtysh
+	# conf t
+	# router ospf
+	# passive-interface default
+	# network <сеть/маска> area 0
+	# network <сеть gre/маска> area 0
+	# area 0 authentication
+	# exit
+	# interface gre1
+	# no ip ospf network broadcast
+	# no ip ospf passive
+	# exit
+	# wr
+systemctl restart frr
+vtysh
+	# show run
+	# show ip osfp neighbor
+	 
+5. Настройте автоматическое распределение IP-адресов на роутере 
+apt install dhcp-server
+nano /etc/dhcp/dhcpd.conf
+default-lease-time 600; 
+max-lease-time 7200; 
+authoritative; 
+subnet X.X.X.X netmask 255.255.255.0 { 
+     range X.X.X.Y X.X.X.Z; # Диапазон выдачи IP-адресов 
+     option routers X.X.X.X; # Шлюз по умолчанию 
+     option domain-name-servers X.X.X.X; # Адрес DNS-сервера 
+}
+host router/server { 
+      hardware ethernet aa:bb:cc:dd:ee:ff; # MAC адрес
+      fixed-address X.X.X.X; # IP адрес 
+}
+nano /etc/default/isc-dhcp-server
+	INTERFACESv4="инт для dhcp"
+
+systemctl start dhcpd
+
+
+6. Настройте локальные учётные записи
+useradd -m -s /bin/bash -u XX "имя пользователя" 
+echo " имя пользователя:пароль " | chpasswd 
+echo " имя пользователя ALL=(ALL) NOPASSWD:ALL" | tee /etc/sudoers.d/ имя пользователя 
+третья команда на двух строчках!!!
+7. Настройте подключение по SSH для удалённого конфигурирования устройств
+nano /etc/ssh/sshd_config
+	Port XXXX
+	AllowUsers имя пользователя
+	MaxAuthTries XX
+LoginGraceTime XXX (в секундах)
+Banner /etc/ssh/ssh-banner
+nano /etc/ssh/ssh-banner
+	#текст баннера ssh#
+systemctl restart sshd
+
+9. Сконфигурируйте файловое хранилище
+(SRV)
+mdadm --create --verbose /dev/md0 --level=X --raid-devices=Y /dev/sdb /dev/sdc
+mdadm --detail --scan >> /etc/mdadm.conf
+dracut --force
+mkfs.ext4 /dev/md0
+blkid /dev/md0
+nano /etc/fstab
+	UUID=<UUID> /путь/монтирования ext4 defaults 0 0
+mount -a
+apt install -y nfs-utils
+mkdir -p /путь/для/общего/доступа
+chmod -R 777 /путь/для/общего/доступа
+nano /etc/exports
+     	/путь/для/общего/доступа X.X.X.0/24(rw,sync,no_root_squash) 
+exportfs -arv 
+systemctl enable --now nfs-server 
+(CLI)
+apt install -y nfs-utils
+mkdir -p /папка 
+nano /etc/fstab 
+ 	X.X.X.<NFS-сервер>:/ путь/для/общего/доступа /папка nfs defaults 0 0
+mount -a 
+
+10. Настройте межсетевой экран на маршрутизаторах
+ufw allow in on eth0 to any port 80 # HTTP 
+ufw allow in on eth0 to any port 443 # HTTPS 
+ufw allow in on eth0 to any port 53 # DNS (UDP) 
+ufw allow in on eth0 proto udp to any port 123 # NTP 
+ufw allow in on eth0 proto icmp # ICMP (ping)
+# Разрешение маршрутизации для локальной сети 
+ufw route allow in on eth1 out on eth0 
+# Разрешение обратных соединений из Интернета 
+ufw route allow in on eth0 out on eth1 to any state RELATED,ESTABLISHED 
+# Запрет всех других подключений из Интернета во внутреннюю сеть 
+ufw route deny in on eth0 out on eth1
+ufw enable
+12. Настройте часовой пояс на всех устройствах
+timedatectl set-timezone Europe/Moscow
+
